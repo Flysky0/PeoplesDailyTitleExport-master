@@ -1,0 +1,19 @@
+# idea
+/.idea/
+
+# python
+/venv/
+
+# data
+/Download/
+/data.json
+
+# Indivdual
+/DatabaseSetting.py
+/.history/
+/.github/
+/Test/
+
+__pycache__/
+*.pyc
+*$py.class
