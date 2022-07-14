@@ -10,9 +10,11 @@
 
 # Indivdual
 /DatabaseSetting.py
+config.py
 /.history/
 /.github/
 /Test/
+cookies.json
 
 __pycache__/
 *.pyc

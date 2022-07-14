@@ -3,16 +3,22 @@ import json
 import os
 import re
 import warnings
-from DatabaseSetting import DatabasePassword, DatabaseHost
+
 import openpyxl
 import pyodbc
 import requests
+from bs4 import BeautifulSoup
 from PyPDF2 import PdfFileMerger
+
+from config import DatabaseHost, DatabasePassword, smartPassword, smartUserName
+from smartLogin import SmartLogin
 
 
 class Database:
     # 初始化数据库连接
     DatabaseName = 'PeopleDaily'
+    DateTableName = "DateIndex"
+    contentTableName = "ArticleIndex"
 
     def __init__(self):
         self.cursor = self.connetMsSqlServer()
@@ -28,27 +34,27 @@ class Database:
         self.cursor.execute(f"use [{self.DatabaseName}]")
 
     def CreateTable(self):
-        TableName = "DateIndex"
-        SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{TableName}]') AND type in (N'U'))
-                    CREATE TABLE [dbo].[{TableName}] (
+        DateTableName = self.DateTableName
+        contentTableName = self.contentTableName
+        SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{DateTableName}]') AND type in (N'U'))
+                    CREATE TABLE [dbo].[{DateTableName}] (
                     [Date]           DATE           NOT NULL,
                     [ArticalNumbers] INT            NULL,
                     [DailyURL]       NVARCHAR (MAX) NULL,
                     PRIMARY KEY CLUSTERED ([Date] ASC)
                 )""".replace("\n", " ")
         self.cursor.execute(SQL)
-        contentTableName = "ArticleIndex"
         SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{contentTableName}]') AND type in (N'U'))
                     CREATE TABLE [dbo].[{contentTableName}] (
                     [ArticalIndex] INT            NOT NULL,
                     [Date]         DATE           NOT NULL,
                     [ArticalTitle] NVARCHAR (MAX) NOT NULL,
                     [Author]       NVARCHAR (MAX) NULL,
+                    [Keyword]      NVARCHAR (MAX) NULL,
                     [Page]         NVARCHAR (MAX) NULL,
                     [ArticalURL]   NVARCHAR (MAX) NOT NULL,
-                    [Keyword]      NVARCHAR (MAX) NULL,
                     PRIMARY KEY CLUSTERED ([ArticalIndex] ASC),
-                    FOREIGN KEY ([Date]) REFERENCES [dbo].[{TableName}] ([Date])
+                    FOREIGN KEY ([Date]) REFERENCES [dbo].[{DateTableName}] ([Date])
                 );""".replace("\n", " ")
         self.cursor.execute(SQL)
 
@@ -61,29 +67,106 @@ class Database:
         cursor = DB.cursor()
         return cursor
 
-    def AddData(self, Date, page, title, a):
-        # Create Table
-        for TableName in ["DateIndex", "DailyContents"]:
-            SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{TableName}]') AND type in (N'U'))
-                        CREATE TABLE [dbo].[{TableName}]
-                        ([IssueID] [nvarchar](50) not null,[historyTime] datetime not null,
-                        [userID] [nvarchar](50) not null,
-                        [orderID] [nvarchar](50) not null , [price] float not null
-                        Primary Key([IssueID],[historyTime],[userID],[orderID],[price]))""".replace("\n", " ")
-            self.cursor.execute(SQL)
-        # insertSQL = f"INSERT INTO [{TableName}] VALUES ('{IssueID}','{historyTime}','{userID}','{orderID}','{price}')"
+    def InsertData_Date(self, Date, ArticalNumbers, DailyURL):
+        if DailyURL != None:
+            DailyURL = f"'{DailyURL}'"
+        InsertSQL = f"INSERT INTO [{self.DateTableName}] VALUES ('{Date}',{ArticalNumbers},{DailyURL})"
         try:
-            pass
-            # self.cursor.execute(insertSQL)
+            self.cursor.execute(InsertSQL)
         except Exception as err:
             # 判断错误是否因主键冲突
             PRIMARYKEY_ERROR_CHECK = re.search('PRIMARY KEY', str(err))
             if PRIMARYKEY_ERROR_CHECK == None:
                 raise
-        self.cursor.commit()
+            else:
+                print(f"主键错误：{Date}已存在")
+        # self.cursor.commit()
+
+    def InsertData_Artical(self, Index, Date, Title, Author, keyword, Page, URL):
+        InsertSQL = f"INSERT INTO [{self.DateTableName}] VALUES ({Index},'{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
+        try:
+            self.cursor.execute(InsertSQL)
+        except Exception as err:
+            # 判断错误是否因主键冲突
+            PRIMARYKEY_ERROR_CHECK = re.search('PRIMARY KEY', str(err))
+            if PRIMARYKEY_ERROR_CHECK == None:
+                raise
+            else:
+                print(f"主键错误：{Date}已存在")
 
 
 class Day:
+    PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
+    # PeopleDailyURL = "https://vpncas.ahut.edu.cn/https/77726476706e69737468656265737421e7e056d23d38614a760d87e29b5a2e/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
+    TargetTitle = "NewspaperTitle(人民日报) _超星发现系统"
+    Database = Database()
+
+    def GetDateIndex(self):
+        session = requests.Session()
+        # session.headers = headers
+        response = session.get(self.PeopleDailyURL)
+
+        # 解析首页
+        soup = BeautifulSoup(response.text, "html.parser")
+        # 获取日期列表
+        DateList = soup.find_all("input", attrs={'id': 'guidedata1'})
+        for subDateList in DateList:
+            DateString = subDateList.attrs["value"]
+            pattern = re.compile(r'[1-2]\d{3}\.[0-1]\d\.[0-3]\d')
+            DateListProcessed = pattern.findall(DateString)
+            for date in DateListProcessed:
+                Database.InsertData_Date(self.Database, date, "NULL", "NULL")
+        # 获取日期列表链接
+        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
+        # 获取日期列表标题
+        DateListTitle = [i.text for i in DateList]
+        # 获取日期列表数量
+        DateListNumbers = [i.text.split(" ")[0] for i in DateList]
+        # 获取日期列表链接
+        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
+        return DateListTitle, DateListNumbers, DateListURL
+
+    def GetDateIndex_VPN(self):
+        cookies = SmartLogin(self.PeopleDailyURL, smartUserName,
+                             smartPassword, self.TargetTitle)
+        # 获取首页
+        headers = {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+            'Connection': 'keep-alive',
+            # 'Cookie': cookies,
+            'Host': 'vpncas.ahut.edu.cn',
+            'Referer': 'https://vpncas.ahut.edu.cn/https/77726476706e69737468656265737421f3f652d226387d44300d8db9d6562d/cas/login?service=https://vpncas.ahut.edu.cn/login?cas_login=true',
+            'sec-ch-ua': '" Not;A Brand";v="99", "Microsoft Edge";v="103", "Chromium";v="103"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-Fetch-Dest': 'document',
+            'sec-Fetch-Mode': 'navigate',
+            'sec-Fetch-Site': 'same-origin',
+            'sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.114 Safari/537.36 Edg/103.0.1264.49'
+        }
+        session = requests.Session()
+        # session.headers = headers
+        response = session.get(self.PeopleDailyURL,
+                               headers=headers, cookies=cookies)
+
+        # 解析首页
+        soup = BeautifulSoup(response.text, "html.parser")
+        # 获取日期列表
+        DateList = soup.find_all("a", class_="news_title")
+        # 获取日期列表链接
+        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
+        # 获取日期列表标题
+        DateListTitle = [i.text for i in DateList]
+        # 获取日期列表数量
+        DateListNumbers = [i.text.split(" ")[0] for i in DateList]
+        # 获取日期列表链接
+        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
+        return DateListTitle, DateListNumbers, DateListURL
+
     NOW = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
     YEAR = str(NOW.year).zfill(4)
     MONTH = str(NOW.month).zfill(2)
@@ -149,7 +232,8 @@ class Page:
 
 
 def main():
-    warnings.filterwarnings('ignore')
+    # warnings.filterwarnings('ignore')
+    Day().GetDateIndex()
     pages = [Page(str(i + 1).zfill(2)) for i in range(Day.PAGE_COUNT)]
     # pages_file = zipfile.ZipFile(Day.PAGES_FILE_PATH, 'w') #建立压缩包
     merged_file = PdfFileMerger(False)
