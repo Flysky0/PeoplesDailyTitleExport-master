@@ -79,7 +79,7 @@ class Database:
                 print(f"主键错误：{Date}已存在")
 
     def InsertData_Artical(self, Index, Date, Title, Author, keyword, Page, URL):
-        InsertSQL = f"INSERT INTO [{self.contentTableName}] ([ArticalIndex],[Date],[ArticalTitle],[Author],[Keyword],[Page],[ArticalURL]) VALUES ({Index},'{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
+        InsertSQL = f"INSERT INTO [{self.contentTableName}] ([ArticalIndex],[Date],[ArticalTitle],[Author],[Keyword],[Page],[ArticalURL]) VALUES ('{Index}','{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
         try:
             self.cursor.execute(InsertSQL)
         except Exception as err:
@@ -233,7 +233,7 @@ class DateList:
 class WebPage:
     PeopleDailyBaseDateURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43&npdate="
     ArticalNumberPattern = re.compile(r'返回<span>(.+?)</span>结果')
-    TimeDelay = 5
+    TimeDelay = 2
 
     def __init__(self, Database, Date):
         self.Database = Database
@@ -271,7 +271,12 @@ class WebPage:
                 self.GetArticalList(dateSoup)
 
     def requestPage(self, URL):
-        response = requests.get(URL)
+        while True:
+            try:
+                response = requests.get(URL)
+                break
+            except:
+                pass
         time.sleep(self.TimeDelay)
         return BeautifulSoup(response.text, "html.parser")
 
@@ -282,7 +287,9 @@ class Article:
     URLPattern = re.compile(
         r'<input id="favurl\d+" type="hidden" value="(http://ss\.zhizhen\.com/.+?)"[>|/>]')
     AuthorPattern = re.compile(
-        r'<input id="favauthor\d+" type="hidden" value="(.+?)"[>|/>]')
+        r'<input id="favauthor\d+" type="hidden" value="(.+?)第3版:要闻"[>|/>]')
+    AuthorRemainPattern = re.compile(
+        r'"/>, <input id="(.+)?" type="hidden" value="')
     KeywordPattern = re.compile(
         r'<li>关键词：(.+?)</li>')
     PagePattern = re.compile(
@@ -304,6 +311,8 @@ class Article:
             self.TitlePattern, ArticalForm)
         ArticalAuthor = GetRegular(
             self.AuthorPattern, ArticalForm)
+        if GetRegular(self.AuthorRemainPattern, ArticalAuthor) != "NULL":
+            ArticalAuthor = "NULL"
         ArticalURL = GetRegular(self.URLPattern, ArticalForm)
         Articalul = self.subArticalList.find_all("ul")[0]
         ArticalKeyword = GetRegular(
@@ -313,7 +322,7 @@ class Article:
         if ArticalPage[0] != "第":
             ArticalPage = "第" + ArticalPage
         ArticalIndex = self.date.replace(
-            ".", "") + str((self.index + 1)).zfill(self.IndexWeith)
+            ".", "") + "_" + str((self.index + 1)).zfill(self.IndexWeith)
         self.Database.InsertData_Artical(
             ArticalIndex, self.date, ArticalTitle, ArticalAuthor, ArticalKeyword, ArticalPage, ArticalURL)
 
