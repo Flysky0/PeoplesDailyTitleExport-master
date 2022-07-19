@@ -1,5 +1,6 @@
 import time
 import re
+from urllib import response
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill
 import pyodbc
@@ -8,6 +9,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 from config import DatabaseHost, DatabasePassword, smartPassword, smartUserName
 from smartLogin import SmartLogin
+from seleniumDriver import CreateEdgeDriverService
 
 
 class Database:
@@ -158,24 +160,27 @@ class Xlsx():
 
 
 class DateList:
-    PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
-    # PeopleDailyURL = "https://vpncas.ahut.edu.cn/https/77726476706e69737468656265737421e7e056d23d38614a760d87e29b5a2e/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
+
     TargetTitle = "NewspaperTitle(人民日报) _超星发现系统"
     Database = Database()
 
-    def __init__(self) -> None:
-        self.GetDateIndex()
+    def __init__(self, Mode="A") -> None:
+        self.PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43"
+        soup = self.Request()
+        self.GetDateIndex(soup)
         self.GetDay()
+        if Mode == "B":
+            self.PeopleDailyURL = "https://vpncas.ahut.edu.cn/https/77726476706e69737468656265737421e7e056d23d38614a760d87e29b5a2e/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
+            with CreateEdgeDriverService() as driver:
+                soup = self.RequestSelenium(driver)
+                self.GetDateIndex(soup)
+                self.GetDay()
 
-    def GetDateIndex(self):
-        session = requests.Session()
-        # session.headers = headers
-        response = session.get(self.PeopleDailyURL)
-        # 解析首页
-        soup = BeautifulSoup(response.text, "html.parser")
-        # 获取日期列表
+    def GetDateIndex(self, soup):
         DateListSource = soup.find_all("input", attrs={'id': 'guidedata1'})
         DateList = []
+        if len(DateListSource) == 0:
+            raise Exception("日期列表获取失败")
         for subDateList in DateListSource:
             DateString = subDateList.attrs["value"]
             pattern = re.compile(r'[1-2]\d{3}\.[0-1]\d\.[0-3]\d')
@@ -185,10 +190,15 @@ class DateList:
     def GetDay(self):
         for dates_Year in tqdm(self.DateList):
             for date in tqdm(dates_Year):
-                if not(self.Database.SelectDate(date)):
-                    WebPage(self.Database, date)
+                if not(self.Database.SelectDate(date)) or date == '2020-01-24'.replace('-', '.'):
+                    WebPage(self.Database, date, self.PeopleDailyURL)
 
-    def GetDateIndex_VPN(self):
+    def Request(self):
+        session = requests.Session()
+        response = session.get(self.PeopleDailyURL)
+        return BeautifulSoup(response.text, "html.parser")
+
+    def RequestVPN(self):
         cookies = SmartLogin(self.PeopleDailyURL, smartUserName,
                              smartPassword, self.TargetTitle)
         # 获取首页
@@ -214,28 +224,21 @@ class DateList:
         # session.headers = headers
         response = session.get(self.PeopleDailyURL,
                                headers=headers, cookies=cookies)
+        return response
 
-        # 解析首页
-        soup = BeautifulSoup(response.text, "html.parser")
-        # 获取日期列表
-        DateList = soup.find_all("a", class_="news_title")
-        # 获取日期列表链接
-        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
-        # 获取日期列表标题
-        DateListTitle = [i.text for i in DateList]
-        # 获取日期列表数量
-        DateListNumbers = [i.text.split(" ")[0] for i in DateList]
-        # 获取日期列表链接
-        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
-        return DateListTitle, DateListNumbers, DateListURL
+    def RequestSelenium(self, driver):
+        SmartLogin(self.PeopleDailyURL, smartUserName,
+                   smartPassword, self.TargetTitle)
+        content = driver.page_source.encode('utf-8')
+        return BeautifulSoup(content, 'lxml')
 
 
 class WebPage:
-    PeopleDailyBaseDateURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43&npdate="
     ArticalNumberPattern = re.compile(r'返回<span>(.+?)</span>结果')
-    TimeDelay = 2
+    TimeDelay = 10
 
-    def __init__(self, Database, Date):
+    def __init__(self, Database, Date, PeopleDailyBaseURL):
+        self.PeopleDailyBaseDateURL = PeopleDailyBaseURL + "&npdate="
         self.Database = Database
         self.date = Date
         self.LoadFristPage()
@@ -278,6 +281,8 @@ class WebPage:
             except:
                 pass
         time.sleep(self.TimeDelay)
+        if "提示页面" in BeautifulSoup(response.text, "html.parser").text:
+            raise Exception("需要验证码")
         return BeautifulSoup(response.text, "html.parser")
 
 
@@ -287,13 +292,13 @@ class Article:
     URLPattern = re.compile(
         r'<input id="favurl\d+" type="hidden" value="(http://ss\.zhizhen\.com/.+?)"[>|/>]')
     AuthorPattern = re.compile(
-        r'<input id="favauthor\d+" type="hidden" value="(.+?)第3版:要闻"[>|/>]')
+        r'<input id="favauthor\d+" type="hidden" value="(.+?)"[>|/>]')
     AuthorRemainPattern = re.compile(
         r'"/>, <input id="(.+)?" type="hidden" value="')
     KeywordPattern = re.compile(
         r'<li>关键词：(.+?)</li>')
     PagePattern = re.compile(
-        r'<li>出处：[\d\D]+人民日报[\d\D]+(第\d+版.*|\d+版：.*|\d+版:.*).*?</li>')
+        r'<li>出处：[\d\D]+人民日报[\w\W]+?(\d\d版.*|\d\d版：.*|\d\d版:.*).*</li>')
 
     def __init__(self, Database, index, date, subArticalList, IndexWeith):
         self.Database = Database
@@ -311,16 +316,17 @@ class Article:
             self.TitlePattern, ArticalForm)
         ArticalAuthor = GetRegular(
             self.AuthorPattern, ArticalForm)
-        if GetRegular(self.AuthorRemainPattern, ArticalAuthor) != "NULL":
-            ArticalAuthor = "NULL"
+        if GetRegular(self.AuthorRemainPattern, ArticalAuthor) != "":
+            ArticalAuthor = ""
         ArticalURL = GetRegular(self.URLPattern, ArticalForm)
         Articalul = self.subArticalList.find_all("ul")[0]
         ArticalKeyword = GetRegular(
             self.KeywordPattern, Articalul).replace('<font color="Red">', "").replace('</font>', "")
         ArticalPage = GetRegular(
-            self.PagePattern, Articalul).replace("\xa0", "")
-        if ArticalPage[0] != "第":
-            ArticalPage = "第" + ArticalPage
+            self.PagePattern, Articalul).replace("\xa0", "").replace(":", "：")
+        if ArticalPage != "":
+            if ArticalPage[0] != "第":
+                ArticalPage = "第" + ArticalPage
         ArticalIndex = self.date.replace(
             ".", "") + "_" + str((self.index + 1)).zfill(self.IndexWeith)
         self.Database.InsertData_Artical(
@@ -332,7 +338,7 @@ def GetRegular(pattern, text):
     if result:
         return result.group(1)
     else:
-        return "NULL"
+        return ""
 
 
 def main():
