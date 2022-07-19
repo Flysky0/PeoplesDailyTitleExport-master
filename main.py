@@ -1,15 +1,11 @@
-import datetime
-import json
-import os
+import time
 import re
-import warnings
-
 import openpyxl
+from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill
 import pyodbc
 import requests
 from bs4 import BeautifulSoup
-from PyPDF2 import PdfFileMerger
-
+from tqdm import tqdm
 from config import DatabaseHost, DatabasePassword, smartPassword, smartUserName
 from smartLogin import SmartLogin
 
@@ -46,14 +42,13 @@ class Database:
         self.cursor.execute(SQL)
         SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{contentTableName}]') AND type in (N'U'))
                     CREATE TABLE [dbo].[{contentTableName}] (
-                    [ArticalIndex] INT            NOT NULL,
+                    [ArticalIndex] NVARCHAR (MAX) NOT NULL,
                     [Date]         DATE           NOT NULL,
                     [ArticalTitle] NVARCHAR (MAX) NOT NULL,
                     [Author]       NVARCHAR (MAX) NULL,
                     [Keyword]      NVARCHAR (MAX) NULL,
                     [Page]         NVARCHAR (MAX) NULL,
                     [ArticalURL]   NVARCHAR (MAX) NOT NULL,
-                    PRIMARY KEY CLUSTERED ([ArticalIndex] ASC),
                     FOREIGN KEY ([Date]) REFERENCES [dbo].[{DateTableName}] ([Date])
                 );""".replace("\n", " ")
         self.cursor.execute(SQL)
@@ -83,7 +78,7 @@ class Database:
         # self.cursor.commit()
 
     def InsertData_Artical(self, Index, Date, Title, Author, keyword, Page, URL):
-        InsertSQL = f"INSERT INTO [{self.DateTableName}] VALUES ({Index},'{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
+        InsertSQL = f"INSERT INTO [{self.contentTableName}] ([ArticalIndex],[Date],[ArticalTitle],[Author],[Keyword],[Page],[ArticalURL]) VALUES ({Index},'{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
         try:
             self.cursor.execute(InsertSQL)
         except Exception as err:
@@ -92,39 +87,105 @@ class Database:
             if PRIMARYKEY_ERROR_CHECK == None:
                 raise
             else:
-                print(f"主键错误：{Date}已存在")
+                print(f"主键错误：{Index}已存在")
+
+    def SelectDate(self, date):
+        DateSelectSQL = f"SELECT Date FROM [{self.DateTableName}] Where Date = '{date.replace('.','-')}'"
+        DateList = self.cursor.execute(DateSelectSQL).fetchall()
+        return bool(DateList)
+
+    def ExportToXlsx():
+        pass
 
 
-class Day:
+class Xlsx():
+    def __init__(self, filename):
+        self.filename = filename
+        self.WorkBook = openpyxl.Workbook()
+        self.WorkSheet = self.WorkBook.active
+
+    def CellStyle(self, xlsx):
+        titlestyle = NamedStyle(name="TitleStyle",
+                                font=Font(name='微软雅黑', size=24, bold=True, italic=False,
+                                          vertAlign=None, underline='none', strike=False, color="00FFFFFF"),
+                                fill=PatternFill(
+                                    fill_type="solid", fgColor="000066CC"),
+                                border=Border(),
+                                alignment=Alignment(horizontal='center', vertical='center',
+                                                    text_rotation=0, wrap_text=False, shrink_to_fit=True, indent=0),
+                                number_format='General',
+                                )
+        oddstyle = NamedStyle(name="OddStyle",
+                              font=Font(name='微软雅黑', size=12, bold=False, italic=False,
+                                        vertAlign=None, underline='none', strike=False, color="00000000"),
+                              fill=PatternFill(
+                                  fill_type="solid", fgColor="00FFFFFF"),
+                              border=Border(),
+                              alignment=Alignment(horizontal='center', vertical='center',
+                                                  text_rotation=0, wrap_text=False, shrink_to_fit=True, indent=0),
+                              number_format='General',
+                              )
+        evenstyle = NamedStyle(name="EvenStyle",
+                               font=Font(name='微软雅黑', size=12, bold=False, italic=False,
+                                         vertAlign=None, underline='none', strike=False, color="00000000"),
+                               fill=PatternFill(
+                                   fill_type="solid", fgColor="00FFFFCC"),
+                               border=Border(),
+                               alignment=Alignment(horizontal='center', vertical='center',
+                                                   text_rotation=0, wrap_text=False, shrink_to_fit=True, indent=0),
+                               number_format='General',
+                               )
+        if not ('EvenStyle' in list(xlsx.style_names)):
+            xlsx.add_named_style(evenstyle)
+        if not ('TitleStyle' in list(xlsx.style_names)):
+            xlsx.add_named_style(titlestyle)
+        if not ('OddStyle' in list(xlsx.style_names)):
+            xlsx.add_named_style(oddstyle)
+
+    def SetCellStyle(self, Row):
+        for Column in range(1, self.WorkSheet.max_column + 1):
+            if Row % 2 == 0:
+                self.WorkSheet[openpyxl.get_column_letter(
+                    Column)+str(Row)].style = "OddStyle"
+            else:
+                self.WorkSheet[openpyxl.get_column_letter(
+                    Column)+str(Row)].style = "EvenStyle"
+
+    def SetColumnWidth(self, Column, Width):
+        self.WorkSheet.column_dimensions[openpyxl.get_column_letter(
+            Column)].width = Width
+
+
+class DateList:
     PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
     # PeopleDailyURL = "https://vpncas.ahut.edu.cn/https/77726476706e69737468656265737421e7e056d23d38614a760d87e29b5a2e/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
     TargetTitle = "NewspaperTitle(人民日报) _超星发现系统"
     Database = Database()
 
+    def __init__(self) -> None:
+        self.GetDateIndex()
+        self.GetDay()
+
     def GetDateIndex(self):
         session = requests.Session()
         # session.headers = headers
         response = session.get(self.PeopleDailyURL)
-
         # 解析首页
         soup = BeautifulSoup(response.text, "html.parser")
         # 获取日期列表
-        DateList = soup.find_all("input", attrs={'id': 'guidedata1'})
-        for subDateList in DateList:
+        DateListSource = soup.find_all("input", attrs={'id': 'guidedata1'})
+        DateList = []
+        for subDateList in DateListSource:
             DateString = subDateList.attrs["value"]
             pattern = re.compile(r'[1-2]\d{3}\.[0-1]\d\.[0-3]\d')
-            DateListProcessed = pattern.findall(DateString)
-            for date in DateListProcessed:
-                Database.InsertData_Date(self.Database, date, "NULL", "NULL")
-        # 获取日期列表链接
-        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
-        # 获取日期列表标题
-        DateListTitle = [i.text for i in DateList]
-        # 获取日期列表数量
-        DateListNumbers = [i.text.split(" ")[0] for i in DateList]
-        # 获取日期列表链接
-        DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
-        return DateListTitle, DateListNumbers, DateListURL
+            DateList.append(pattern.findall(DateString))
+        self.DateList = DateList
+
+    def GetDay(self):
+        for dates_Year in tqdm(self.DateList):
+            for date in tqdm(dates_Year):
+                if not(self.Database.SelectDate(date)):
+                    WebPage(self.Database, date)
 
     def GetDateIndex_VPN(self):
         cookies = SmartLogin(self.PeopleDailyURL, smartUserName,
@@ -167,115 +228,103 @@ class Day:
         DateListURL = [self.PeopleDailyURL + i["href"] for i in DateList]
         return DateListTitle, DateListNumbers, DateListURL
 
-    NOW = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-    YEAR = str(NOW.year).zfill(4)
-    MONTH = str(NOW.month).zfill(2)
-    DAY = str(NOW.day).zfill(2)
-    DATE = ''.join([YEAR, MONTH, DAY])
 
-    DIR = os.path.join('Download', DATE)
-    MERGED_DIR = os.path.join('Download', 'MERGED')
-    # PAGES_FILE_PATH = os.path.join(DIR, f'{DATE}.zip')
-    MERGED_FILE_PATH = os.path.join(MERGED_DIR, f'{DATE}.pdf')
+class WebPage:
+    PeopleDailyBaseDateURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43&npdate="
+    ArticalNumberPattern = re.compile(r'返回<span>(.+)</span>结果')
+    TimeDelay = 5
 
-    HOME_URL = f'http://paper.people.com.cn/rmrb/html/{YEAR}-{MONTH}/{DAY}/nbs.D110000renmrb_01.htm'
-    PAGE_COUNT = requests.get(HOME_URL).text.count('pageLink')
+    def __init__(self, Database, Date):
+        self.Database = Database
+        self.date = Date
+        self.LoadFristPage()
+        self.MaxPage = int(self.ArticalNumber / 15 + 0.9999)
 
-    if not os.path.isdir(DIR):
-        os.makedirs(DIR)
-    if not os.path.isdir(MERGED_DIR):
-        os.makedirs(MERGED_DIR)
+    def LoadFristPage(self):
+        # 获取日期链接
+        self.FirstDateURL = self.PeopleDailyBaseDateURL + self.date
+        # 获取日期页面
+        dateSoup = self.requestPage(self.FirstDateURL)
+        ArticalNumberContent = dateSoup.find_all(
+            "div", attrs={'class': 'left'})[0]
+        ArticalNumber = GetRegular(
+            self.ArticalNumberPattern, ArticalNumberContent).replace(",", "")
+        self.ArticalNumber = int(ArticalNumber)
+        self.Database.InsertData_Date(
+            self.date, self.ArticalNumber, self.FirstDateURL)
+        self.GetArticalList(dateSoup)
+
+    def GetArticalList(self, dateSoup):
+        ArticalList = dateSoup.find_all(
+            "div", attrs={'class': 'savelist clearfix'})
+        for index, subArticalList in enumerate(ArticalList):
+            Article(self.Database, index, self.date,
+                    subArticalList, len(str(self.ArticalNumber)))
+
+    def GetNextPage(self):
+        if self.MaxPage > 1:
+            for PageIndex in range(2, self.MaxPage + 1):
+                DateURL = self.PeopleDailyBaseDateURL + self.date + \
+                    f"&size=15&isort=0&x=0_476&pages={PageIndex}"
+                dateSoup = self.requestPage(DateURL)
+                self.GetArticalList(dateSoup)
+
+    def requestPage(self, URL):
+        response = requests.get(URL)
+        time.sleep(self.TimeDelay)
+        return BeautifulSoup(response.text, "html.parser")
 
 
-class Page:
-    def __init__(self, page: str):
-        self.page = page
-        self.html_url = f'http://paper.people.com.cn/rmrb/html/{Day.YEAR}-{Day.MONTH}/{Day.DAY}/nbs.D110000renmrb_{self.page}.htm'
-        self.html = requests.get(self.html_url).text
-        self.pdf = requests.get(
-            (
-                'http://paper.people.com.cn/rmrb/images/{0}-{1}/{2}/{3}/rmrb{0}{1}{2}{3}.pdf'
-                .format(Day.YEAR, Day.MONTH, Day.DAY, page)
-            )
-        ).content
-        self.path = os.path.join(Day.DIR, f'{self.page}.pdf')
+class Article:
+    TitlePattern = re.compile(
+        r'<input id="favtitle\d+" type="hidden" value="(.+)">')
+    URLPattern = re.compile(
+        r'<input id="favurl\d+" type="hidden" value="(http://ss\.zhizhen\.com/.+)">')
+    AuthorPattern = re.compile(
+        r'<input id="favauthor\d+" type="hidden" value="(.+)">')
+    KeywordPattern = re.compile(
+        r'<li>关键词：(.+)</li>')
+    PagePattern = re.compile(
+        r'<li>出处.+(第.+:.+)&nbsp;</li>')
 
-    def __str__(self) -> str:
-        return (
-            f'{self.__class__.__name__}'
-            f'[date={Day.DATE}, page={self.page}, title={self.title}]'
-        )
+    def __init__(self, Database, index, date, subArticalList, IndexWeith):
+        self.Database = Database
+        self.index = index
+        self.date = date
+        self.subArticalList = subArticalList
+        self.IndexWeith = IndexWeith
+        self.InsertToDatebase()
 
-    def __repr__(self) -> str:
-        return self.__str__()
+    def InsertToDatebase(self):
+        ArticalForm = self.subArticalList.find_all(
+            "form")[0].find_all(
+            "input")
+        ArticalTitle = GetRegular(
+            self.TitlePattern, ArticalForm)
+        ArticalAuthor = GetRegular(
+            self.AuthorPattern, ArticalForm)
+        ArticalURL = GetRegular(self.URLPattern, ArticalForm)
+        Articalul = self.subArticalList.find_all("ul")[0]
+        ArticalKeyword = GetRegular(
+            self.KeywordPattern, Articalul).replace('<font color="Red">', "").replace('</font>', "")
+        ArticalPage = GetRegular(
+            self.PagePattern, Articalul)
+        ArticalIndex = self.date.replace(
+            ".", "") + str((self.index + 1)).zfill(self.IndexWeith)
+        self.Database.InsertData_Artical(
+            ArticalIndex, self.date, ArticalTitle, ArticalAuthor, ArticalKeyword, ArticalPage, ArticalURL)
 
-    @property
-    def title(self):
-        return re.findall('<p class="left ban">(.*?)</p>', self.html)[0]
 
-    @property
-    def articles(self):
-        return [
-            (
-                (
-                    'http://paper.people.com.cn/rmrb/html/{}-{}/{}/{}'
-                    .format(Day.YEAR, Day.MONTH, Day.DAY, i[0])
-                ),
-                i[1].strip()
-            ) for i in
-            re.findall('<a href=(nw.*?)>(.*?)</a>', self.html)
-        ]
-
-    def save_pdf(self):
-        with open(self.path, 'wb') as f:
-            f.write(self.pdf)
+def GetRegular(pattern, text):
+    result = pattern.search(str(text))
+    if result:
+        return result.group(1)
+    else:
+        return "NULL"
 
 
 def main():
-    # warnings.filterwarnings('ignore')
-    Day().GetDateIndex()
-    pages = [Page(str(i + 1).zfill(2)) for i in range(Day.PAGE_COUNT)]
-    # pages_file = zipfile.ZipFile(Day.PAGES_FILE_PATH, 'w') #建立压缩包
-    merged_file = PdfFileMerger(False)
-    data = {
-        'date': Day.DATE,
-        'page_count': str(Day.PAGE_COUNT),
-        # 'pages_file_path': Day.PAGES_FILE_PATH,
-        'merged_file_path': Day.MERGED_FILE_PATH,
-        'release_body': (
-            f'# [{Day.DATE}]({Day.HOME_URL})'
-            f'\n\n今日 {Day.PAGE_COUNT} 版'
-        )
-    }
-
-    # Process
-    for page in pages:
-        # Save pdf
-        page.save_pdf()
-
-        # Pages file
-        # pages_file.write(page.path, os.path.basename(page.path))
-
-        # Merged file
-        merged_file.append(page.path)
-
-        # Data，版面、版面URL
-        data['release_body'] += f'\n\n## [{page.title}]({page.html_url})\n'
-        for article in page.articles:
-            # URL、标题
-            data['release_body'] += f'\n- [{article[1]}]({article[0]})'
-
-        # Info
-        print(f'Processed {page}')
-
-    # Save
-    # pages_file.close()
-    merged_file.write(Day.MERGED_FILE_PATH)
-    merged_file.close()
-    # for page in pages:
-    #     os.remove(page.path)
-    with open('data.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    DateList()
 
 
 if __name__ == '__main__':
