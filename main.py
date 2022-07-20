@@ -1,6 +1,5 @@
 import time
 import re
-from urllib import response
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill
 import pyodbc
@@ -165,16 +164,19 @@ class DateList:
     Database = Database()
 
     def __init__(self, Mode="A") -> None:
-        self.PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43"
-        soup = self.Request()
-        self.GetDateIndex(soup)
-        self.GetDay()
-        if Mode == "B":
+        if Mode == "A":
+            self.driver = None
+            self.PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43"
+            soup = self.Request()
+            self.GetDateIndex(soup)
+            self.GetDay("A")
+        elif Mode == "B":
             self.PeopleDailyURL = "https://vpncas.ahut.edu.cn/https/77726476706e69737468656265737421e7e056d23d38614a760d87e29b5a2e/s?sw=NewspaperTitle%28%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%29&nps=a5074152ece3d23811d0255ed743ac43"
             with CreateEdgeDriverService() as driver:
-                soup = self.RequestSelenium(driver)
+                self.driver = driver
+                soup = self.RequestSelenium(self.driver)
                 self.GetDateIndex(soup)
-                self.GetDay()
+                self.GetDay("B")
 
     def GetDateIndex(self, soup):
         DateListSource = soup.find_all("input", attrs={'id': 'guidedata1'})
@@ -187,11 +189,12 @@ class DateList:
             DateList.append(pattern.findall(DateString))
         self.DateList = DateList
 
-    def GetDay(self):
+    def GetDay(self, Mode):
         for dates_Year in tqdm(self.DateList):
             for date in tqdm(dates_Year):
-                if not(self.Database.SelectDate(date)) or date == '2020-01-24'.replace('-', '.'):
-                    WebPage(self.Database, date, self.PeopleDailyURL)
+                if not(self.Database.SelectDate(date)) or date == '2018-12-21'.replace('-', '.'):
+                    WebPage(self.Database, date,
+                            self.PeopleDailyURL, Mode, self.driver)
 
     def Request(self):
         session = requests.Session()
@@ -226,10 +229,10 @@ class DateList:
                                headers=headers, cookies=cookies)
         return response
 
-    def RequestSelenium(self, driver):
+    def RequestSelenium(self):
         SmartLogin(self.PeopleDailyURL, smartUserName,
                    smartPassword, self.TargetTitle)
-        content = driver.page_source.encode('utf-8')
+        content = self.driver.page_source.encode('utf-8')
         return BeautifulSoup(content, 'lxml')
 
 
@@ -237,7 +240,9 @@ class WebPage:
     ArticalNumberPattern = re.compile(r'返回<span>(.+?)</span>结果')
     TimeDelay = 10
 
-    def __init__(self, Database, Date, PeopleDailyBaseURL):
+    def __init__(self, Database, Date, PeopleDailyBaseURL, Mode="A", driver=None):
+        self.driver = driver
+        self.mode = Mode
         self.PeopleDailyBaseDateURL = PeopleDailyBaseURL + "&npdate="
         self.Database = Database
         self.date = Date
@@ -274,16 +279,23 @@ class WebPage:
                 self.GetArticalList(dateSoup)
 
     def requestPage(self, URL):
-        while True:
-            try:
-                response = requests.get(URL)
-                break
-            except:
-                pass
-        time.sleep(self.TimeDelay)
-        if "提示页面" in BeautifulSoup(response.text, "html.parser").text:
+        if self.mode == "A":
+            while True:
+                try:
+                    response = requests.get(URL)
+                    break
+                except:
+                    pass
+            time.sleep(self.TimeDelay)
+            soup = BeautifulSoup(response.text, "html.parser")
+        elif self.mode == "B":
+            self.driver.get(URL)
+            self.driver.implicitly_wait(10)
+            content = self.driver.page_source.encode('utf-8')
+            soup = BeautifulSoup(content, "lxml")
+        if "提示页面" in soup.text:
             raise Exception("需要验证码")
-        return BeautifulSoup(response.text, "html.parser")
+        return soup
 
 
 class Article:

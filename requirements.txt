@@ -1,7 +1,7 @@
 requests
-PyPDF2
 pyodbc
 openpyxl
 selenium
 webdriver_manager
 bs4
+tqdm
