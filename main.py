@@ -1,14 +1,16 @@
-import time
 import re
+import time
+
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill
 import pyodbc
 import requests
 from bs4 import BeautifulSoup
+from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill
 from tqdm import tqdm
+
 from config import DatabaseHost, DatabasePassword, smartPassword, smartUserName
-from smartLogin import SmartLogin
 from seleniumDriver import CreateEdgeDriverService
+from smartLogin import SmartLogin
 
 
 class Database:
@@ -100,7 +102,7 @@ class Database:
         pass
 
 
-class Xlsx():
+class Xlsx:
     def __init__(self, filename):
         self.filename = filename
         self.WorkBook = openpyxl.Workbook()
@@ -192,7 +194,7 @@ class DateList:
     def GetDay(self, Mode):
         for dates_Year in tqdm(self.DateList):
             for date in tqdm(dates_Year):
-                if not(self.Database.SelectDate(date)) or date == '2018-12-21'.replace('-', '.'):
+                if not(self.Database.SelectDate(date)) or date == '2016-04-04'.replace('-', '.'):
                     WebPage(self.Database, date,
                             self.PeopleDailyURL, Mode, self.driver)
 
@@ -238,7 +240,7 @@ class DateList:
 
 class WebPage:
     ArticalNumberPattern = re.compile(r'返回<span>(.+?)</span>结果')
-    TimeDelay = 10
+    TimeDelay = 15
 
     def __init__(self, Database, Date, PeopleDailyBaseURL, Mode="A", driver=None):
         self.driver = driver
@@ -247,11 +249,12 @@ class WebPage:
         self.Database = Database
         self.date = Date
         self.LoadFristPage()
-        self.MaxPage = int(self.ArticalNumber / 15 + 0.9999)
+        self.MaxPage = int(self.ArticalNumber / 50 + 0.9999999)
 
     def LoadFristPage(self):
         # 获取日期链接
-        self.FirstDateURL = self.PeopleDailyBaseDateURL + self.date
+        self.FirstDateURL = self.PeopleDailyBaseDateURL + self.date +  \
+            f"&size=50&isort=0&x=0_476&pages=1"
         # 获取日期页面
         dateSoup = self.requestPage(self.FirstDateURL)
         ArticalNumberContent = dateSoup.find_all(
@@ -274,7 +277,7 @@ class WebPage:
         if self.MaxPage > 1:
             for PageIndex in range(2, self.MaxPage + 1):
                 DateURL = self.PeopleDailyBaseDateURL + self.date + \
-                    f"&size=15&isort=0&x=0_476&pages={PageIndex}"
+                    f"&size=50&isort=0&x=0_476&pages={PageIndex}"
                 dateSoup = self.requestPage(DateURL)
                 self.GetArticalList(dateSoup)
 
@@ -355,6 +358,7 @@ def GetRegular(pattern, text):
 
 def main():
     DateList()
+    # DateList("B")
 
 
 if __name__ == '__main__':
