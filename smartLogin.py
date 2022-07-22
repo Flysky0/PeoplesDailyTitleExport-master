@@ -18,7 +18,7 @@ def SmartLogin(driver, URL, username, password, TargetTitle):
     CookiesLogin(URL, driver)
     driver.maximize_window()
     while True:
-        if driver.title == '智慧校园统一身份认证 - 用户登录' or '智慧校园' in driver.title:
+        if '登录' in driver.title or '智慧校园' in driver.title:
             Login(URL, driver, username, password)
             SaveCookies(driver.get_cookies())
         elif driver.title == TargetTitle:
@@ -31,7 +31,7 @@ def SmartLogin(driver, URL, username, password, TargetTitle):
 def Login(URL, driver, Username, Password):
     driver.get(URL)
     driver.implicitly_wait(5)
-    while driver.title == '智慧校园统一身份认证 - 用户登录':
+    while '登录' in driver.title:
         login = driver.find_element(By.ID, 'username')
         login.clear()
         login.send_keys(Username)
@@ -39,7 +39,8 @@ def Login(URL, driver, Username, Password):
                                        )
         password.clear()
         password.send_keys(Password)
-        driver.find_element(By.ID, 'imageCodeName').click()
+        driver.find_element(By.CLASS_NAME, 'el-checkbox__inner').click()
+        driver.find_element(By.NAME, 'submit').click()
         sleep(5)
 
 

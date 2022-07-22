@@ -1,5 +1,7 @@
+from enum import Flag
 import re
 import time
+from unittest import result
 
 import openpyxl
 import pyodbc
@@ -8,16 +10,17 @@ from bs4 import BeautifulSoup
 from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill
 from tqdm import tqdm
 
-from config import DatabaseHost, DatabasePassword, smartPassword, smartUserName
+from config import (DatabaseHost, DatabasePassword, Mode, smartPassword,
+                    smartUserName)
 from seleniumDriver import CreateEdgeDriverService
 from smartLogin import SmartLogin
 
 
 class Database:
     # 初始化数据库连接
-    DatabaseName = 'PeopleDaily'
+    DatabaseName = 'PeopleDaily+'
     DateTableName = "DateIndex"
-    contentTableName = "ArticleIndex"
+    contentTableName = "PaperIndex"
 
     def __init__(self):
         self.cursor = self.connetMsSqlServer()
@@ -40,23 +43,37 @@ class Database:
         SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{DateTableName}]') AND type in (N'U'))
                     CREATE TABLE [dbo].[{DateTableName}] (
                     [Date]           DATE           NOT NULL,
-                    [ArticalNumbers] INT            NULL,
+                    [PaperNumbers] INT            NULL,
                     [DailyURL]       NVARCHAR (MAX) NULL,
+                    [Exported-PaperNumbers] INT  NULL,
                     PRIMARY KEY CLUSTERED ([Date] ASC)
                 )""".replace("\n", " ")
         self.cursor.execute(SQL)
         SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{contentTableName}]') AND type in (N'U'))
                     CREATE TABLE [dbo].[{contentTableName}] (
-                    [ArticalIndex] NVARCHAR (MAX) NOT NULL,
+                    [PaperIndex] NVARCHAR (20) NOT NULL,
                     [Date]         DATE           NOT NULL,
-                    [ArticalTitle] NVARCHAR (MAX) NOT NULL,
+                    [PaperTitle] NVARCHAR (450) NOT NULL,
                     [Author]       NVARCHAR (MAX) NULL,
                     [Keyword]      NVARCHAR (MAX) NULL,
                     [Page]         NVARCHAR (MAX) NULL,
-                    [ArticalURL]   NVARCHAR (MAX) NOT NULL,
+                    [PaperURL]   NVARCHAR (MAX) NOT NULL,
+                    PRIMARY KEY CLUSTERED ([Date] ASC, [PaperTitle] ASC),
                     FOREIGN KEY ([Date]) REFERENCES [dbo].[{DateTableName}] ([Date])
                 );""".replace("\n", " ")
         self.cursor.execute(SQL)
+        try:
+            CreateViewSQL = f"""CREATE VIEW [Date_Paper] AS (                            
+                                SELECT A.[Date]                                 
+                                ,[PaperNumbers]                                 
+                                ,[DailyURL]                                
+                                ,B.[Exported-PaperNumbers]                  
+                                FROM [dbo].[DateIndex] A LEFT JOIN     
+                                (SELECT [Date], COUNT(*) AS [Exported-PaperNumbers] FROM [dbo].[PaperIndex] GROUP BY [Date]) B         
+                                ON A.[Date] = B.[Date] )""".replace("\n", " ")
+            self.cursor.execute(CreateViewSQL)
+        except:
+            pass
 
     def connetMsSqlServer(self):
         server = DatabaseHost
@@ -67,10 +84,10 @@ class Database:
         cursor = DB.cursor()
         return cursor
 
-    def InsertData_Date(self, Date, ArticalNumbers, DailyURL):
+    def InsertData_Date(self, Date, PaperNumbers, DailyURL):
         if DailyURL != None:
             DailyURL = f"'{DailyURL}'"
-        InsertSQL = f"INSERT INTO [{self.DateTableName}] VALUES ('{Date}',{ArticalNumbers},{DailyURL})"
+        InsertSQL = f"INSERT INTO [{self.DateTableName}] VALUES ('{Date}',{PaperNumbers},{DailyURL},'')"
         try:
             self.cursor.execute(InsertSQL)
         except Exception as err:
@@ -79,24 +96,67 @@ class Database:
             if PRIMARYKEY_ERROR_CHECK == None:
                 raise
             else:
-                print(f"主键错误：{Date}已存在")
+                PrintAndSave(f"主键错误：{Date}已存在")
 
-    def InsertData_Artical(self, Index, Date, Title, Author, keyword, Page, URL):
-        InsertSQL = f"INSERT INTO [{self.contentTableName}] ([ArticalIndex],[Date],[ArticalTitle],[Author],[Keyword],[Page],[ArticalURL]) VALUES ('{Index}','{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
-        try:
-            self.cursor.execute(InsertSQL)
-        except Exception as err:
-            # 判断错误是否因主键冲突
-            PRIMARYKEY_ERROR_CHECK = re.search('PRIMARY KEY', str(err))
-            if PRIMARYKEY_ERROR_CHECK == None:
-                raise
-            else:
-                print(f"主键错误：{Index}已存在")
+    def InsertData_Paper(self, Index, Date, Title, Author, keyword, Page, URL):
+        index = 1
+        if Title.endswith('）') and keyword == '':
+            text = Title.split('（')
+            Title = text[0]
+            # 部分标题内容重复，后带主题
+            Flag1 = True
+        for index in range(2, 99):
+            InsertSQL = f"INSERT INTO [{self.contentTableName}] ([PaperIndex],[Date],[PaperTitle],[Author],[Keyword],[Page],[PaperURL]) VALUES ('{Index}','{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
+            try:
+                self.cursor.execute(InsertSQL)
+                break
+            except Exception as err:
+                # 判断错误是否因主键冲突
+                PRIMARYKEY_ERROR_CHECK = re.search('PRIMARY KEY', str(err))
+                if PRIMARYKEY_ERROR_CHECK == None:
+                    raise
+                else:
+                    URLSQL = f"SELECT [PaperURL] FROM [{self.contentTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
+                    self.cursor.execute(URLSQL)
+                    CollisionURL = self.cursor.fetchall()[0][0]
+                    if Title == "图片报道" and URL != CollisionURL:
+                        Title = f"图片报道{index}"
+                        PrintAndSave(
+                            f"标题修改提示：已将【{Index}_{Date}_{Title}_{Page}】的标题修改为【{Title}】")
+                    else:
+                        PageSQL = f"SELECT [Page],[PaperTitle],[Author],[Keyword] FROM [{self.contentTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
+                        self.cursor.execute(PageSQL)
+                        result = self.cursor.fetchall()
+                        CollisionPage = result[0][0]
+                        if Page in CollisionPage:
+                            if Flag1:
+                                self.UpdatePaperNumbers(Date)
+                            PrintAndSave(
+                                f"主键错误：\t【{Index}_{Date}_{Title}_{Page}】  \t已存在")
+                        else:
+                            NewPage = f"{CollisionPage}、{Page}"
+                            UpdatePageSQL = f"UPDATE [{self.contentTableName}] SET [Page] = '{NewPage}' WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
+                            self.cursor.execute(UpdatePageSQL)
+                            self.UpdatePaperNumbers(Date)
+                            PrintAndSave(
+                                f"版面修改提示：已将{Index}_{Date}_{Title}的版面从【{CollisionPage}】修改为【{NewPage}】")
+                        break
 
-    def SelectDate(self, date):
-        DateSelectSQL = f"SELECT Date FROM [{self.DateTableName}] Where Date = '{date.replace('.','-')}'"
+    def UpdatePaperNumbers(self, Date):
+        UpdatePaperNumbersSQL = f"UPDATE [{self.DateTableName}] SET [PaperNumbers] = [PaperNumbers] - 1 WHERE [Date] = '{Date}'"
+        self.cursor.execute(UpdatePaperNumbersSQL)
+
+    def DateCheck(self, date):
+        date = date.replace('.', '-')
+        DateSelectSQL = f"SELECT Date FROM [{self.DateTableName}] Where Date = '{date}'"
         DateList = self.cursor.execute(DateSelectSQL).fetchall()
-        return bool(DateList)
+        if bool(DateList):
+            DateCompareSQL = f"""SELECT CASE WHEN [PaperNumbers] = [Exported-PaperNumbers] THEN 1 ELSE 0 END AS Compared
+                                ,[PaperNumbers],[Exported-PaperNumbers] FROM dbo.[Date_Paper] WHERE [Date] = '{date}'""".replace("\n", " ")
+            DateCompare = self.cursor.execute(DateCompareSQL).fetchall()
+            if bool(DateCompare[0][0]):
+                return False
+        return True
 
     def ExportToXlsx():
         pass
@@ -166,6 +226,7 @@ class DateList:
     Database = Database()
 
     def __init__(self, Mode="A") -> None:
+        PrintAndSave(f"__________{Mode}_{time.time()}__________")
         if Mode == "A":
             self.driver = None
             self.PeopleDailyURL = "https://ss.zhizhen.com/s?sw=NewspaperTitle(%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5)&nps=a5074152ece3d23811d0255ed743ac43"
@@ -194,7 +255,7 @@ class DateList:
     def GetDay(self, Mode):
         for dates_Year in tqdm(self.DateList):
             for date in tqdm(dates_Year):
-                if not(self.Database.SelectDate(date)) or date == '2016-04-04'.replace('-', '.'):
+                if self.Database.DateCheck(date):
                     WebPage(self.Database, date,
                             self.PeopleDailyURL, Mode, self.driver)
 
@@ -239,47 +300,49 @@ class DateList:
 
 
 class WebPage:
-    ArticalNumberPattern = re.compile(r'返回<span>(.+?)</span>结果')
-    TimeDelay = 15
+    PaperNumberPattern = re.compile(r'返回<span>(.+?)</span>结果')
+    TimeDelay = 25
 
     def __init__(self, Database, Date, PeopleDailyBaseURL, Mode="A", driver=None):
+        self.PageSize = 100
         self.driver = driver
         self.mode = Mode
         self.PeopleDailyBaseDateURL = PeopleDailyBaseURL + "&npdate="
         self.Database = Database
         self.date = Date
         self.LoadFristPage()
-        self.MaxPage = int(self.ArticalNumber / 50 + 0.9999999)
+        self.MaxPage = int(self.PaperNumber / self.PageSize + 0.9999999)
+        self.GetNextPage()
 
     def LoadFristPage(self):
         # 获取日期链接
         self.FirstDateURL = self.PeopleDailyBaseDateURL + self.date +  \
-            f"&size=50&isort=0&x=0_476&pages=1"
+            f"&size={self.PageSize}&isort=0&x=0_476&pages=1"
         # 获取日期页面
         dateSoup = self.requestPage(self.FirstDateURL)
-        ArticalNumberContent = dateSoup.find_all(
+        PaperNumberContent = dateSoup.find_all(
             "div", attrs={'class': 'left'})[0]
-        ArticalNumber = GetRegular(
-            self.ArticalNumberPattern, ArticalNumberContent).replace(",", "")
-        self.ArticalNumber = int(ArticalNumber)
+        PaperNumber = GetRegular(
+            self.PaperNumberPattern, PaperNumberContent).replace(",", "")
+        self.PaperNumber = int(PaperNumber)
         self.Database.InsertData_Date(
-            self.date, self.ArticalNumber, self.FirstDateURL)
-        self.GetArticalList(dateSoup)
+            self.date, self.PaperNumber, self.FirstDateURL)
+        self.GetPaperList(dateSoup)
 
-    def GetArticalList(self, dateSoup):
-        ArticalList = dateSoup.find_all(
+    def GetPaperList(self, dateSoup):
+        PaperList = dateSoup.find_all(
             "div", attrs={'class': 'savelist clearfix'})
-        for index, subArticalList in enumerate(ArticalList):
-            Article(self.Database, index, self.date,
-                    subArticalList, len(str(self.ArticalNumber)))
+        for index, subPaperList in enumerate(PaperList):
+            Paper(self.Database, index, self.date,
+                  subPaperList, len(str(self.PaperNumber)))
 
     def GetNextPage(self):
         if self.MaxPage > 1:
             for PageIndex in range(2, self.MaxPage + 1):
                 DateURL = self.PeopleDailyBaseDateURL + self.date + \
-                    f"&size=50&isort=0&x=0_476&pages={PageIndex}"
+                    f"&size={self.PageSize}&isort=0&x=0_476&pages={PageIndex}"
                 dateSoup = self.requestPage(DateURL)
-                self.GetArticalList(dateSoup)
+                self.GetPaperList(dateSoup)
 
     def requestPage(self, URL):
         if self.mode == "A":
@@ -301,7 +364,7 @@ class WebPage:
         return soup
 
 
-class Article:
+class Paper:
     TitlePattern = re.compile(
         r'<input id="favtitle\d+" type="hidden" value="(.+?)"[>|/>]')
     URLPattern = re.compile(
@@ -315,37 +378,37 @@ class Article:
     PagePattern = re.compile(
         r'<li>出处：[\d\D]+人民日报[\w\W]+?(\d\d版.*|\d\d版：.*|\d\d版:.*).*</li>')
 
-    def __init__(self, Database, index, date, subArticalList, IndexWeith):
+    def __init__(self, Database, index, date, subPaperList, IndexWeith):
         self.Database = Database
         self.index = index
         self.date = date
-        self.subArticalList = subArticalList
+        self.subPaperList = subPaperList
         self.IndexWeith = IndexWeith
         self.InsertToDatebase()
 
     def InsertToDatebase(self):
-        ArticalForm = self.subArticalList.find_all(
+        PaperForm = self.subPaperList.find_all(
             "form")[0].find_all(
             "input")
-        ArticalTitle = GetRegular(
-            self.TitlePattern, ArticalForm)
-        ArticalAuthor = GetRegular(
-            self.AuthorPattern, ArticalForm)
-        if GetRegular(self.AuthorRemainPattern, ArticalAuthor) != "":
-            ArticalAuthor = ""
-        ArticalURL = GetRegular(self.URLPattern, ArticalForm)
-        Articalul = self.subArticalList.find_all("ul")[0]
-        ArticalKeyword = GetRegular(
-            self.KeywordPattern, Articalul).replace('<font color="Red">', "").replace('</font>', "")
-        ArticalPage = GetRegular(
-            self.PagePattern, Articalul).replace("\xa0", "").replace(":", "：")
-        if ArticalPage != "":
-            if ArticalPage[0] != "第":
-                ArticalPage = "第" + ArticalPage
-        ArticalIndex = self.date.replace(
+        PaperTitle = GetRegular(
+            self.TitlePattern, PaperForm)
+        PaperAuthor = GetRegular(
+            self.AuthorPattern, PaperForm)
+        if GetRegular(self.AuthorRemainPattern, PaperAuthor) != "":
+            PaperAuthor = ""
+        PaperURL = GetRegular(self.URLPattern, PaperForm)
+        Paperul = self.subPaperList.find_all("ul")[0]
+        PaperKeyword = GetRegular(
+            self.KeywordPattern, Paperul).replace('<font color="Red">', "").replace('</font>', "")
+        PaperPage = GetRegular(
+            self.PagePattern, Paperul).replace("\xa0", "").replace(":", "：")
+        if PaperPage != "":
+            if PaperPage[0] != "第":
+                PaperPage = "第" + PaperPage
+        PaperIndex = self.date.replace(
             ".", "") + "_" + str((self.index + 1)).zfill(self.IndexWeith)
-        self.Database.InsertData_Artical(
-            ArticalIndex, self.date, ArticalTitle, ArticalAuthor, ArticalKeyword, ArticalPage, ArticalURL)
+        self.Database.InsertData_Paper(
+            PaperIndex, self.date, PaperTitle, PaperAuthor, PaperKeyword, PaperPage, PaperURL)
 
 
 def GetRegular(pattern, text):
@@ -356,9 +419,21 @@ def GetRegular(pattern, text):
         return ""
 
 
+def PrintAndSave(TEXT):
+    print(TEXT)
+    with open("log.txt", "a", encoding='utf8') as f:
+        f.write(TEXT + "\n")
+
+
 def main():
-    DateList()
-    # DateList("B")
+    if Mode == "A":
+        DateList()
+    if Mode == "B":
+        while True:
+            try:
+                DateList("B")
+            except:
+                pass
 
 
 if __name__ == '__main__':
