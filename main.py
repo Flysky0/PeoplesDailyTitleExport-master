@@ -73,7 +73,6 @@ class Database:
                     [Keyword]      NVARCHAR (MAX) NULL,
                     [Page]         NVARCHAR (MAX) NULL,
                     [PaperURL]   NVARCHAR (MAX) NOT NULL,
-                    PRIMARY KEY CLUSTERED ([Date] ASC, [PaperTitle] ASC),
                     FOREIGN KEY ([Date]) REFERENCES [dbo].[{DateTableName}] ([Date])
                 );""".replace("\n", " ")
         self.cursor.execute(SQL)
@@ -114,16 +113,19 @@ class Database:
                 PrintAndSave(f"主键错误：{Date}已存在")
 
     def InsertData_Paper(self, Index, Date, Title, Author, keyword, Page, URL):
-        Flag1 = False
+        Flag_SpecialTitle = False
         index = 1
         if Title.endswith('）') and keyword == '':
             text = Title.split('（')
             Title = text[0]
             # 部分标题内容重复，后带主题
-            Flag1 = True
+            Flag_SpecialTitle = True
         for index in range(2, 99):
             InsertSQL = f"INSERT INTO [{self.contentTableName}] ([PaperIndex],[Date],[PaperTitle],[Author],[Keyword],[Page],[PaperURL]) VALUES ('{Index}','{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
             try:
+                if Flag_SpecialTitle:
+                    self.InserData_ExtendURL(
+                        Index, Date, Title, Author, keyword, Page, URL)
                 self.cursor.execute(InsertSQL)
                 break
             except Exception as err:
@@ -140,23 +142,33 @@ class Database:
                         PrintAndSave(
                             f"URL重复：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
                         break
-                    elif Title == "图片报道":
+                    elif Title.startswith("图片报道"):
                         Title = f"图片报道{index}"
                         PrintAndSave(
                             f"标题修改提示：\t已将【{Index}\t{Date}\t{Title}\t{Page}】的标题修改为\t【{Title}】")
                     else:
-                        PageSQL = f"SELECT [Page],[PaperTitle],[Author],[Keyword] FROM [{self.contentTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
+                        PageSQL = f"SELECT [Page],[PaperTitle],[PaperIndex],[Author],[Keyword] FROM [{self.contentTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
                         self.cursor.execute(PageSQL)
                         result = self.cursor.fetchall()
                         CollisionPage = result[0][0]
                         if Page in CollisionPage:
-                            if Flag1:
+                            if Flag_SpecialTitle:
                                 self.UpdatePaperNumbers(Date)
                                 self.InserData_ExtendURL(
                                     Index, Date, Title, Author, keyword, Page, URL)
                                 PrintAndSave(
-                                    f"文章重复：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
+                                    f"文章重复（特殊标题前）：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
                             else:
+                                SpecialTitleSQL = f"""SELECT * FROM [{self.ExtendURLTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'""".replace(
+                                    "\n", " ")
+                                self.cursor.execute(SpecialTitleSQL)
+                                SpecialTitleResult = self.cursor.fetchall()
+                                if len(SpecialTitleResult) != 0:
+                                    self.UpdatePaperNumbers(Date)
+                                    self.InserData_ExtendURL(
+                                        Index, Date, Title, Author, keyword, Page, URL)
+                                    PrintAndSave(
+                                        f"文章重复（特殊标题后）：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
                                 PrintAndSave(
                                     f"主键错误：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
                         else:
