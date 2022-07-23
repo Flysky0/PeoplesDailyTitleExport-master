@@ -18,9 +18,10 @@ from smartLogin import SmartLogin
 
 class Database:
     # 初始化数据库连接
-    DatabaseName = 'PeopleDaily+'
+    DatabaseName = 'PeopleDaily++'
     DateTableName = "DateIndex"
     contentTableName = "PaperIndex"
+    ExtendURLTableName = "ExtendURL"
 
     def __init__(self):
         self.cursor = self.connetMsSqlServer()
@@ -40,6 +41,7 @@ class Database:
     def CreateTable(self):
         DateTableName = self.DateTableName
         contentTableName = self.contentTableName
+        ExtendURLTableName = self.ExtendURLTableName
         SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{DateTableName}]') AND type in (N'U'))
                     CREATE TABLE [dbo].[{DateTableName}] (
                     [Date]           DATE           NOT NULL,
@@ -53,6 +55,19 @@ class Database:
                     CREATE TABLE [dbo].[{contentTableName}] (
                     [PaperIndex] NVARCHAR (20) NOT NULL,
                     [Date]         DATE           NOT NULL,
+                    [PaperTitle] NVARCHAR (450) NOT NULL,
+                    [Author]       NVARCHAR (MAX) NULL,
+                    [Keyword]      NVARCHAR (MAX) NULL,
+                    [Page]         NVARCHAR (MAX) NULL,
+                    [PaperURL]   NVARCHAR (MAX) NOT NULL,
+                    PRIMARY KEY CLUSTERED ([Date] ASC, [PaperTitle] ASC),
+                    FOREIGN KEY ([Date]) REFERENCES [dbo].[{DateTableName}] ([Date])
+                );""".replace("\n", " ")
+        self.cursor.execute(SQL)
+        SQL = f"""IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[{ExtendURLTableName}]') AND type in (N'U'))
+                    CREATE TABLE [dbo].[{ExtendURLTableName}] (
+                    [PaperIndex] NVARCHAR (20) NOT NULL,
+                    [Date]         DATE        NOT NULL,
                     [PaperTitle] NVARCHAR (450) NOT NULL,
                     [Author]       NVARCHAR (MAX) NULL,
                     [Keyword]      NVARCHAR (MAX) NULL,
@@ -99,6 +114,7 @@ class Database:
                 PrintAndSave(f"主键错误：{Date}已存在")
 
     def InsertData_Paper(self, Index, Date, Title, Author, keyword, Page, URL):
+        Flag1 = False
         index = 1
         if Title.endswith('）') and keyword == '':
             text = Title.split('（')
@@ -116,13 +132,18 @@ class Database:
                 if PRIMARYKEY_ERROR_CHECK == None:
                     raise
                 else:
-                    URLSQL = f"SELECT [PaperURL] FROM [{self.contentTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
+                    URLSQL = f"""SELECT [PaperURL] FROM [{self.contentTableName}] WHERE [PaperURL] = '{URL}' UNION
+                                SELECT [PaperURL] FROM [{self.ExtendURLTableName}] WHERE [PaperURL] = '{URL}'""".replace("\n", " ")
                     self.cursor.execute(URLSQL)
-                    CollisionURL = self.cursor.fetchall()[0][0]
-                    if Title == "图片报道" and URL != CollisionURL:
+                    CollisionURL = self.cursor.fetchall()
+                    if len(CollisionURL) != 0:
+                        PrintAndSave(
+                            f"URL重复：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
+                        break
+                    elif Title == "图片报道":
                         Title = f"图片报道{index}"
                         PrintAndSave(
-                            f"标题修改提示：已将【{Index}_{Date}_{Title}_{Page}】的标题修改为【{Title}】")
+                            f"标题修改提示：\t已将【{Index}\t{Date}\t{Title}\t{Page}】的标题修改为\t【{Title}】")
                     else:
                         PageSQL = f"SELECT [Page],[PaperTitle],[Author],[Keyword] FROM [{self.contentTableName}] WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
                         self.cursor.execute(PageSQL)
@@ -131,27 +152,38 @@ class Database:
                         if Page in CollisionPage:
                             if Flag1:
                                 self.UpdatePaperNumbers(Date)
-                            PrintAndSave(
-                                f"主键错误：\t【{Index}_{Date}_{Title}_{Page}】  \t已存在")
+                                self.InserData_ExtendURL(
+                                    Index, Date, Title, Author, keyword, Page, URL)
+                                PrintAndSave(
+                                    f"文章重复：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
+                            else:
+                                PrintAndSave(
+                                    f"主键错误：\t【{Index}\t{Date}\t{Title}\t{Page}】\t已存在")
                         else:
                             NewPage = f"{CollisionPage}、{Page}"
                             UpdatePageSQL = f"UPDATE [{self.contentTableName}] SET [Page] = '{NewPage}' WHERE [Date] = '{Date}' AND [PaperTitle] = '{Title}'"
                             self.cursor.execute(UpdatePageSQL)
                             self.UpdatePaperNumbers(Date)
+                            self.InserData_ExtendURL(
+                                Index, Date, Title, Author, keyword, Page, URL)
                             PrintAndSave(
-                                f"版面修改提示：已将{Index}_{Date}_{Title}的版面从【{CollisionPage}】修改为【{NewPage}】")
+                                f"版面修改提示：\t已将{Index}\t{Date}\t{Title}的版面从【{CollisionPage}】修改为\t【{NewPage}】")
                         break
 
     def UpdatePaperNumbers(self, Date):
         UpdatePaperNumbersSQL = f"UPDATE [{self.DateTableName}] SET [PaperNumbers] = [PaperNumbers] - 1 WHERE [Date] = '{Date}'"
         self.cursor.execute(UpdatePaperNumbersSQL)
 
+    def InserData_ExtendURL(self, Index, Date, Title, Author, keyword, Page, URL):
+        InsertSQL = f"INSERT INTO [{self.ExtendURLTableName}] ([PaperIndex],[Date],[PaperTitle],[Author],[Keyword],[Page],[PaperURL]) VALUES ('{Index}','{Date}','{Title}','{Author}','{keyword}','{Page}','{URL}')"
+        self.cursor.execute(InsertSQL)
+
     def DateCheck(self, date):
         date = date.replace('.', '-')
         DateSelectSQL = f"SELECT Date FROM [{self.DateTableName}] Where Date = '{date}'"
         DateList = self.cursor.execute(DateSelectSQL).fetchall()
         if bool(DateList):
-            DateCompareSQL = f"""SELECT CASE WHEN [PaperNumbers] = [Exported-PaperNumbers] THEN 1 ELSE 0 END AS Compared
+            DateCompareSQL = f"""SELECT CASE WHEN [PaperNumbers] <= [Exported-PaperNumbers] THEN 1 ELSE 0 END AS Compared
                                 ,[PaperNumbers],[Exported-PaperNumbers] FROM dbo.[Date_Paper] WHERE [Date] = '{date}'""".replace("\n", " ")
             DateCompare = self.cursor.execute(DateCompareSQL).fetchall()
             if bool(DateCompare[0][0]):
@@ -305,6 +337,7 @@ class WebPage:
 
     def __init__(self, Database, Date, PeopleDailyBaseURL, Mode="A", driver=None):
         self.PageSize = 100
+        self.UcodeTryTimes = 0
         self.driver = driver
         self.mode = Mode
         self.PeopleDailyBaseDateURL = PeopleDailyBaseURL + "&npdate="
@@ -344,23 +377,35 @@ class WebPage:
                 dateSoup = self.requestPage(DateURL)
                 self.GetPaperList(dateSoup)
 
+    def Ucode(self):
+        self.UcodeTryTimes += 1
+        if self.UcodeTryTimes > 20:
+            raise Exception("验证失败超过20次")
+        CodeURL = "https://login.zhizhen.com/processVerifyPng.ac?t=1410685298"
+        LoginURL = "https://login.zhizhen.com/processVerify.ac?ucode=nayk"
+        requests.get(CodeURL)
+        time.sleep(5)
+        requests.get(LoginURL)
+
     def requestPage(self, URL):
         if self.mode == "A":
             while True:
                 try:
                     response = requests.get(URL)
-                    break
                 except:
                     pass
+                soup = BeautifulSoup(response.text, "html.parser")
+                if "提示页面" in soup.text:
+                    # raise Exception("需要验证码")
+                    self.Ucode()
+                else:
+                    break
             time.sleep(self.TimeDelay)
-            soup = BeautifulSoup(response.text, "html.parser")
         elif self.mode == "B":
             self.driver.get(URL)
             self.driver.implicitly_wait(10)
             content = self.driver.page_source.encode('utf-8')
             soup = BeautifulSoup(content, "lxml")
-        if "提示页面" in soup.text:
-            raise Exception("需要验证码")
         return soup
 
 
